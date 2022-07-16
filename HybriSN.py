@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-Created on Mon Jun 20 15:02:07 2022
+Created on Thu Jul 14 15:02:07 2022
 
 @author: USER
 """
@@ -19,12 +19,9 @@ import copy
 import cv2
 import os
 
-from Hybri_test import SAVE_PATH
-
-class_num = 1
 
 class HybridSN(nn.Module):  
-    def __init__(self, in_channels=1, out_channels=class_num):
+    def __init__(self, in_channels=1, out_channels= 1):
         super(HybridSN, self).__init__()
         self.conv3d_features = nn.Sequential(
         nn.Conv3d(in_channels,out_channels=8,kernel_size=(7,3,3)),
@@ -60,42 +57,41 @@ class HybridSN(nn.Module):
 
 def applyPCA(x, numComponents = 30):
     x_channal = np.reshape(x, (-1, x.shape[2]))
-    pca = PCA(n_components=numComponents, whiten=True)
+    pca = PCA(n_components= numComponents, whiten=True)
     x_pca = pca.fit_transform(x_channal)
     return np.reshape(x_pca, (x.shape[0], x.shape[1], numComponents))
 
-def padWithZeros(X, margin=2):
-    newX = np.zeros((X.shape[0] + 2 * margin, X.shape[1] + 2* margin, X.shape[2]))
-    x_offset = margin
-    y_offset = margin
-    newX[x_offset:X.shape[0] + x_offset, y_offset:X.shape[1] + y_offset, :] = X
-    return newX
+def padWithZeros(x, margin):
+    new_x = np.zeros((x.shape[0] + 2 * margin, x.shape[1] + 2* margin, x.shape[2])) # creating a zero matrix with size expanded from x
+    new_x[ margin: x.shape[0] + margin, margin: x.shape[1] + margin, :] = x
+    return new_x
 
-def createImageCubes(X, y, windowSize= 5, removeZeroLabels = True):
-    # 给 X 做 padding
-    margin = int((windowSize - 1) / 2)
-    zeroPaddedX = padWithZeros(X, margin=margin)
-    # split patches
-    patchesData = np.zeros((X.shape[0] * X.shape[1], windowSize, windowSize, X.shape[2]))
-    patchesLabels = np.zeros((X.shape[0] * X.shape[1]))
-    patchIndex = 0
-    for r in range(margin, zeroPaddedX.shape[0] - margin):
-        for c in range(margin, zeroPaddedX.shape[1] - margin):
-            patch = zeroPaddedX[r - margin:r + margin + 1, c - margin:c + margin + 1]   
-            patchesData[patchIndex, :, :, :] = patch
-            patchesLabels[patchIndex] = y[r-margin, c-margin]
-            patchIndex = patchIndex + 1
-    if removeZeroLabels:
-        patchesData = patchesData[patchesLabels>0,:,:,:]
-        patchesLabels = patchesLabels[patchesLabels>0]
-        patchesLabels -= 1
-    return patchesData, patchesLabels
+def createImageCubes(x, y, windowSize: int= 5, removeZeroLabels = False):
+    '''window size should be at least 3 and be an odd number'''
+    if windowSize >= 3 and windowSize % 2 == 1:
+        # 给 x 做 padding
+        margin = int((windowSize - 1) / 2)
+        zeroPaddedx = padWithZeros(x, margin)
+        # split patches
+        patchesData = np.zeros((x.shape[0] * x.shape[1], windowSize, windowSize, x.shape[2]))   # add 2 dimensions, delete space dimension
+        patchesLabels = np.zeros((x.shape[0] * x.shape[1], 3))     # second dimension stores RGB channal
 
-def splitTrainTestSet(X, y, testRatio, randomState=345):
-    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=testRatio, random_state=randomState, stratify=y)
-    return X_train, X_test, y_train, y_test
+        for r in range(x.shape[0]):
+            for c in range(x.shape[1]):
+                patchIndex = r*x.shape[1] + c
+                patchesData[patchIndex, :, :] = zeroPaddedx[r: r + windowSize, c: c + windowSize]
+                patchesLabels[patchIndex, :] = y[r, c]
+        if removeZeroLabels:
+            patchesData = patchesData[patchesLabels>0,:,:,:]
+            patchesLabels = patchesLabels[patchesLabels>0]
+            patchesLabels -= 1  # ????????????????????????????????????????????????????????
+        return patchesData, patchesLabels
+    
+    else:
+        print('window size should be at least 3 and be an odd number')
 
-  
+
+
 """ Training dataset"""
 class TrainDS(torch.utils.data.Dataset): 
     def __init__(self):
@@ -182,72 +178,64 @@ def test_acc(net):
     index_acc = classification.find('weighted avg')
     accuracy = classification[index_acc+17:index_acc+23]
     return float(accuracy)
-    
-def Raw2Mat(raw_file , mask_file):
-    #hdr to mat
-    imgData= np.fromfile(raw_file , dtype = 'float32')
-    # 利用numpy中array的reshape函式將讀取到的資料進行重新排列。
-    imgData = imgData.reshape(1536, 2044, 150)
-    # imgData = imgData.astype(np.uint16)
-    # sio.savemat('raw.mat', {'raww': imgData})
-
-    #label to mat
-    img = cv2.imread(mask_file)
-    cv2.imshow('img' , img)
-    cv2.waitKey(0)
-    #ret, img_3 = cv2.threshold(img_2,10,1,cv2.THRESH_TRUNC)
-    # sio.savemat('Indian_pines_gt.mat', {'indian_pines_gt': img})
 
 if __name__ == '__main__':
 
 # io -----------------------------------------------------------------------------------------------------------------------------
     os.chdir('data')
     raw_file = 'B1_processed.raw'
-    mask_file = 'B1_merged_watershed_mask.png'
-    vraw = imgData= np.fromfile(raw_file , dtype = 'float32')
-    raw = vraw.reshape(1536, 2044, 150) #(h, w, c)
-    mask = cv2.imread(mask_file)
+    mask_file = 'B1_merged_color_mask.png'
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
-    SAVE_PATH = os.getcwd()
+    MODEL_PATH = os.getcwd() # +model file
+
+    # saving as .mat dtype
+    # print('\ncreating database......')
+    # img = cv2.imread(mask_file)
+    # sio.savemat('data_y.mat', {'mask': img})
+
+    # vraw = np.fromfile(raw_file , dtype = 'float32')
+    # raw = vraw.reshape(img.shape[0], img.shape[1], 150) #(h, w, c)
+    # sio.savemat('data_x.mat', {'raw': raw})
 
 # parameters ---------------------------------------------------------------------------------------------------------------------
-    class_num = 2
-    test_ratio = 0.90
-    patch_size = 25
-    pca_components = 30    
+    class_num = 4
+    TEST_RATIO = 0.10
+    patch_size = 5 # n*n cube
+    pca_components = 30
+    split_seed = 1
 
-# cal ----------------------------------------------------------------------------------------------------------------------------
-    # Raw2Mat(raw , mask)
-    # X = sio.loadmat('/indian_pines_corrected.mat')['indian_pines_corrected']
-    # y = sio.loadmat('/indian_pines_gt.mat')['indian_pines_gt']
+# loading data and model ---------------------------------------------------------------------------------------------------------
+    x = sio.loadmat('data_x.mat')['raw']
+    y = sio.loadmat('data_y.mat')['mask']
 
-    print('PCA tranformation ... ...')
-    raw_pca = applyPCA(raw, numComponents= pca_components)
-    print('Data shape after PCA: ', raw_pca.shape)
-    
-    print('\ncreate data cubes ... ...')
-    raw_pca, mask = createImageCubes(raw_pca, mask, windowSize= patch_size)
-    print('Data cube raw shape: ', raw_pca.shape)
-    print('Data cube mask shape: ', mask.shape)
-
-    height = raw.shape[0]
-    width = raw.shape[1]
+    # height = y.shape[0]
+    # width = y.shape[1]
 
     net = HybridSN().to(device)
-    net
-    net.load_state_dict(torch.load(SAVE_PATH))
+    try:
+        net.load_state_dict(torch.load(MODEL_PATH))
+
+    except:
+        print("no saved model")
     net.eval()
     net = net.cuda()
 
-    # print('\n... ... create train & test data ... ...')
-    # Xtrain, Xtest, ytrain, ytest = splitTrainTestSet(X_pca, y, test_ratio)
-    # print('Xtrain shape: ', Xtrain.shape)
-    # print('Xtest  shape: ', Xtest.shape)
+# calculation --------------------------------------------------------------------------------------------------------------------
+    print('\nPCA transformation......')
+    x_pca = applyPCA(x, numComponents= pca_components)
     
-    # Xtrain = Xtrain.reshape(-1, patch_size, patch_size, pca_components, 1)
-    # Xtest  = Xtest.reshape(-1, patch_size, patch_size, pca_components, 1)
-    # print('before transpose: Xtrain shape: ', Xtrain.shape) 
-    # print('before transpose: Xtest  shape: ', Xtest.shape) 
+    print('\ncreating data cubes......')
+    x_cube, y = createImageCubes(x_pca, y, windowSize= patch_size)
+    print('Data cube raw shape: ', x_cube.shape)
+    print('Data cube mask shape: ', y.shape)
+
+    print('\ncreate train & test data......')
+    x_train, x_test, y_train, y_test = train_test_split(x_cube, y, test_size= TEST_RATIO, random_state= split_seed, stratify= y)
+    print('train samples: ',y_train.shape[0])
+    print('test samples: ',y_test.shape[0])
+    
+    # x_train = x_train.reshape(-1, patch_size, patch_size, pca_components, 1)
+    # x_test  = x_test.reshape(-1, patch_size, patch_size, pca_components, 1)
     
     # Xtrain = Xtrain.transpose(0, 4, 3, 1, 2)
     # Xtest  = Xtest.transpose(0, 4, 3, 1, 2)
