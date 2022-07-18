@@ -21,12 +21,12 @@ import os
 
 
 class HybridSN(nn.Module):  
-    def __init__(self, in_channels=1, out_channels= 1):
+    def __init__(self, in_channels= 1, out_channels= 1):
         super(HybridSN, self).__init__()
         self.conv3d_features = nn.Sequential(
-        nn.Conv3d(in_channels,out_channels=8,kernel_size=(7,3,3)),
+        nn.Conv3d(in_channels,out_channels=8,kernel_size=(3,3,3)),
         nn.ReLU(),
-        nn.Conv3d(in_channels=8,out_channels=16,kernel_size=(5,3,3)),
+        nn.Conv3d(in_channels=8,out_channels=16,kernel_size=(3,3,3)),
         nn.ReLU(),
         nn.Conv3d(in_channels=16,out_channels=32,kernel_size=(3,3,3)),
         nn.ReLU()
@@ -47,13 +47,13 @@ class HybridSN(nn.Module):
         nn.Linear(128, 16)
         )
  
-    # def forward(self, x):
-    #     x = self.conv3d_features(x)
-    #     x = x.view(x.size()[0],x.size()[1]*x.size()[2],x.size()[3],x.size()[4])
-    #     x = self.conv2d_features(x)
-    #     x = x.view(x.size()[0],-1)
-    #     x = self.classifier(x)
-    #     return x
+    def forward(self, x):
+        x = self.conv3d_features(x)
+        x = x.view(x.size()[0],x.size()[1]*x.size()[2],x.size()[3],x.size()[4])
+        x = self.conv2d_features(x)
+        x = x.view(x.size()[0],-1)
+        x = self.classifier(x)
+        return x
 
 def applyPCA(x, numComponents = 30):
     x_channal = np.reshape(x, (-1, x.shape[2]))
@@ -91,30 +91,17 @@ def createImageCubes(x, y, windowSize: int= 5, removeZeroLabels = False):
         print('window size should be at least 3 and be an odd number')
 
 
-
-""" Training dataset"""
-class TrainDS(torch.utils.data.Dataset): 
-    def __init__(self):
-        self.len = Xtrain.shape[0]
-        self.x_data = torch.FloatTensor(Xtrain)
-        self.y_data = torch.LongTensor(ytrain)        
+class DS(torch.utils.data.Dataset):
+    """ Training/testing dataset"""
+    def __init__(self, x, y):
+        self.len = x.shape[0]
+        self.x_data = torch.FloatTensor(x)
+        self.y_data = torch.LongTensor(y)        
     def __getitem__(self, index):
         return self.x_data[index], self.y_data[index]
     def __len__(self): 
         return self.len
 
-""" Testing dataset"""
-class TestDS(torch.utils.data.Dataset): 
-    def __init__(self):
-        self.len = Xtest.shape[0]
-        self.x_data = torch.FloatTensor(Xtest)
-        self.y_data = torch.LongTensor(ytest)
-    def __getitem__(self, index):
-        return self.x_data[index], self.y_data[index]
-    def __len__(self): 
-        return self.len
-
-   
 
 def train(net):
 
@@ -128,9 +115,9 @@ def train(net):
     optimizer = optim.Adam(net.parameters(), lr=0.001)
 
     total_loss = 0
-    for epoch in range(2):
+    for epoch in range(1):
         net.train() 
-        for i, (inputs, labels) in enumerate(train_loader):
+        for i, (inputs, labels) in enumerate(train_loader):  # enumerate: iterate items, return tuple
             inputs = inputs.to(device)
             labels = labels.to(device)
             optimizer.zero_grad()
@@ -147,7 +134,6 @@ def train(net):
         if current_acc > best_acc:
             best_acc = current_acc
             best_net_wts = copy.deepcopy(net.state_dict())
-            torch.save(net.state_dict(), './Snapshot/Best_model.pth')
 
         print('[Epoch: %d]   [loss avg: %.4f]   [current loss: %.4f]  [current acc: %.4f]' %(epoch + 1, total_loss/(epoch+1), loss.item(), current_acc))
         current_loss_his.append(loss.item())
@@ -155,6 +141,7 @@ def train(net):
     print('Finished Training')
     print("Best Acc:%.4f" %(best_acc))
 
+    torch.save(net.state_dict(), './model')
     # load best model weights
     net.load_state_dict(best_net_wts)
 
@@ -180,79 +167,81 @@ def test_acc(net):
     return float(accuracy)
 
 if __name__ == '__main__':
-
-# io -----------------------------------------------------------------------------------------------------------------------------
-    os.chdir('data')
-    raw_file = 'B1_processed.raw'
-    mask_file = 'B1_merged_color_mask.png'
-    device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
-    MODEL_PATH = os.getcwd() # +model file
-
-    # saving as .mat dtype
-    # print('\ncreating database......')
-    # img = cv2.imread(mask_file)
-    # sio.savemat('data_y.mat', {'mask': img})
-
-    # vraw = np.fromfile(raw_file , dtype = 'float32')
-    # raw = vraw.reshape(img.shape[0], img.shape[1], 150) #(h, w, c)
-    # sio.savemat('data_x.mat', {'raw': raw})
-
 # parameters ---------------------------------------------------------------------------------------------------------------------
     class_num = 4
     TEST_RATIO = 0.10
     patch_size = 5 # n*n cube
     pca_components = 30
     split_seed = 1
+    batch_size = 32
 
-# loading data and model ---------------------------------------------------------------------------------------------------------
-    x = sio.loadmat('data_x.mat')['raw']
-    y = sio.loadmat('data_y.mat')['mask']
+# io -----------------------------------------------------------------------------------------------------------------------------
+    os.chdir('data')
+    raw_file = 'B1_processed.raw'
+    mask_file = 'B1_merged_color_mask.png'
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    MODEL_PATH = './model' # +model file
 
-    # height = y.shape[0]
-    # width = y.shape[1]
+    # saving as .mat dtype
+    print('\ncreating matfile......')
+    img = cv2.imread(mask_file, 0)
+    sio.savemat('data_y.mat', {'data_y': img})
 
-    net = HybridSN().to(device)
-    try:
-        net.load_state_dict(torch.load(MODEL_PATH))
+    vraw = np.fromfile(raw_file , dtype = 'float32')
+    raw = vraw.reshape(img.shape[0], img.shape[1], 150) #(h, w, c)
+    sio.savemat('data_x.mat', {'data_x': raw})
 
-    except:
-        print("no saved model")
-    net.eval()
-    net = net.cuda()
+# loading data -------------------------------------------------------------------------------------------------------------------
+    x = sio.loadmat('data_x.mat')['data_x']
+    y = sio.loadmat('data_y.mat')['data_y']
+    print(x.shape)
+    print(y.shape)
 
 # calculation --------------------------------------------------------------------------------------------------------------------
-    print('\nPCA transformation......')
-    x_pca = applyPCA(x, numComponents= pca_components)
+    # print('\nPCA transformation......')
+    # x_pca = applyPCA(x, numComponents= pca_components)
     
-    print('\ncreating data cubes......')
-    x_cube, y = createImageCubes(x_pca, y, windowSize= patch_size)
-    print('Data cube raw shape: ', x_cube.shape)
-    print('Data cube mask shape: ', y.shape)
+    # print('\ncreating data cubes......')
+    # x_cube, y = createImageCubes(x_pca, y, windowSize= patch_size)
+    # print('Data cube raw shape: ', x_cube.shape)
+    # print('Data cube mask shape: ', y.shape)
 
-    print('\ncreate train & test data......')
-    x_train, x_test, y_train, y_test = train_test_split(x_cube, y, test_size= TEST_RATIO, random_state= split_seed, stratify= y)
-    print('train samples: ',y_train.shape[0])
-    print('test samples: ',y_test.shape[0])
+    # print('\nsplit train & test data......')
+    # x_train, x_test, y_train, y_test = train_test_split(x_cube, y, test_size= TEST_RATIO, random_state= split_seed, stratify= y)
+    # print('train sample shape: ',y_train.shape)
+    # print('test sample shape: ',y_test.shape)
+
+    # sio.savemat('x_train.mat', {'x_train': x_train})
+    # sio.savemat('x_test.mat', {'x_test': x_test})
+    # sio.savemat('y_train.mat', {'y_train': y_train})
+    # sio.savemat('y_test.mat', {'y_test': y_test})
+
+# tensorflow ---------------------------------------------------------------------------------------------------------------------
+
+    # x_train = sio.loadmat('x_train.mat', {'x_train': x_train})
+    # x_test = sio.loadmat('x_test.mat', {'x_test': x_test})
+    # y_train = sio.loadmat('y_train.mat', {'y_train': y_train})
+    # y_test = sio.loadmat('y_test.mat', {'y_test': y_test})
+
+    # net = HybridSN(in_channels= batch_size, out_channels= class_num).to(device)
+    # if device == "cuda": net = net.cuda()
+    # net.eval()
+    # try:
+    #     net.load_state_dict(torch.load(MODEL_PATH))
+        
+    # except:
+    #     print("no saved model")
     
-    # x_train = x_train.reshape(-1, patch_size, patch_size, pca_components, 1)
-    # x_test  = x_test.reshape(-1, patch_size, patch_size, pca_components, 1)
-    
-    # Xtrain = Xtrain.transpose(0, 4, 3, 1, 2)
-    # Xtest  = Xtest.transpose(0, 4, 3, 1, 2)
-    # print('after transpose: Xtrain shape: ', Xtrain.shape) 
-    # print('after transpose: Xtest  shape: ', Xtest.shape) 
-    
-    # trainset = TrainDS()
-    # testset  = TestDS()
-    # train_loader = torch.utils.data.DataLoader(dataset=trainset, batch_size=128, shuffle=True)
-    # test_loader  = torch.utils.data.DataLoader(dataset=testset,  batch_size=128, shuffle=False)
-    
-    # device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
-    
-    # net = HybridSN().to(device)
-    # net,current_loss_his,current_Acc_his = train(net)
-    
-    # net.eval()   
+    # print('\ncreating dataset......')
+    # trainset = DS(x_train, y_train)
+    # testset  = DS(x_test, y_test)
+    # print('\nloading dataset......')
+    # train_loader = torch.utils.data.DataLoader(dataset= trainset, batch_size= batch_size, shuffle= False)
+    # test_loader  = torch.utils.data.DataLoader(dataset= testset,  batch_size= batch_size, shuffle= False)
+
+    # print('\ntraining......')
+    # net, loss_his, Acc_his = train(net)
+   
     # count = 0
     # for inputs, _ in test_loader:
     #     inputs = inputs.to(device)
@@ -266,13 +255,6 @@ if __name__ == '__main__':
     
     # classification = classification_report(ytest, y_pred_test, digits=4)
     # print(classification)
-    
-    # # load the original image
- 
-    # X = sio.loadmat('/indian_pines_corrected.mat')['indian_pines_corrected']
-    # y = sio.loadmat('/indian_pines_gt.mat')['indian_pines_gt']
-    
-
     
     # X = applyPCA(X, numComponents= pca_components)
     # X = padWithZeros(X, patch_size//2)
